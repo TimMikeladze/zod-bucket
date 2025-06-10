@@ -20,7 +20,7 @@ import { ZodBucket } from "../src";
 
 // Test configuration
 const TEST_BUCKET = `zod-bucket-test-${Date.now()}-${Math.random().toString(36).substr(2, 9)}`;
-const TEST_REGION = process.env.AWS_REGION || "us-east-1";
+const TEST_REGION = process.env.S3_REGION || "us-east-1";
 
 // Test schemas
 const UserSchema = z.object({
@@ -88,13 +88,17 @@ describe("ZodBucket", () => {
 
 	beforeAll(async () => {
 		// Initialize S3 client
-		s3Client = new S3Client({
+		const config = {
 			region: TEST_REGION,
+			endpoint: process.env.S3_ENDPOINT,
+			forcePathStyle: true,
 			credentials: {
-				accessKeyId: process.env.AWS_ACCESS_KEY_ID || "",
-				secretAccessKey: process.env.AWS_SECRET_ACCESS_KEY || "",
+				accessKeyId: process.env.S3_ACCESS_KEY || "",
+				secretAccessKey: process.env.S3_SECRET_KEY || "",
 			},
-		});
+		};
+
+		s3Client = new S3Client(config);
 
 		// Create test bucket
 		try {

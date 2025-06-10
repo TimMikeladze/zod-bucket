@@ -4,6 +4,7 @@ import {
 	ListObjectsV2Command,
 	PutObjectCommand,
 	S3Client,
+	type S3ClientConfig,
 } from "@aws-sdk/client-s3";
 import { Rehiver } from "rehiver";
 import type { ZodType, z } from "zod";
@@ -18,6 +19,7 @@ export interface ZodBucketConfig<
 	bucket: string;
 	prefix?: string;
 	s3Client?: S3Client;
+	s3ClientConfig?: S3ClientConfig;
 	schema: T;
 	// Optional partition schema for path validation
 	partitionSchema?: P;
@@ -47,7 +49,12 @@ export class ZodBucket<T extends SchemaMap, P extends ZodType = ZodType> {
 	constructor(config: ZodBucketConfig<T, P>) {
 		this.bucket = config.bucket;
 		this.prefix = config.prefix || "";
-		this.s3Client = config.s3Client || new S3Client();
+		this.s3Client =
+			config.s3Client ||
+			new S3Client({
+				forcePathStyle: true,
+				...config.s3ClientConfig,
+			});
 		this.schema = config.schema;
 		this.partitionSchema = config.partitionSchema;
 
