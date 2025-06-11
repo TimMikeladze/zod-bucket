@@ -104,6 +104,7 @@
 	"dependencies": {
 		"@aws-sdk/client-s3": "^3.826.0",
 		"rehiver": "^1.1.0",
+		"s3-mutex": "^1.1.0",
 		"zod": "^3.25.28"
 	}
 }

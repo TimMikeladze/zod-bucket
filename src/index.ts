@@ -7,6 +7,8 @@ import {
 	type S3ClientConfig,
 } from "@aws-sdk/client-s3";
 import { Rehiver } from "rehiver";
+import type { S3MutexOptions } from "s3-mutex";
+import { S3Mutex } from "s3-mutex";
 import type { ZodType, z } from "zod";
 
 export type SchemaMap = Record<string, ZodType>;
@@ -25,6 +27,10 @@ export interface ZodBucketConfig<
 	partitionSchema?: P;
 	// Optional rehiver configuration
 	rehiverOptions?: ConstructorParameters<typeof Rehiver>[0];
+	// Optional mutex configuration for safe writes
+	mutexOptions?: Partial<Omit<S3MutexOptions, "s3Client" | "bucketName">>;
+	// Whether to enable mutex locking for write operations (default: true)
+	enableMutex?: boolean;
 }
 
 export type SchemaInfer<T extends SchemaMap> = {
@@ -45,6 +51,8 @@ export class ZodBucket<T extends SchemaMap, P extends ZodType = ZodType> {
 	private readonly partitionSchema?: P;
 	private readonly rehiver: Rehiver;
 	private readonly partitionParser?: ReturnType<Rehiver["partitionParser"]>;
+	private readonly mutex?: S3Mutex;
+	private readonly enableMutex: boolean;
 
 	constructor(config: ZodBucketConfig<T, P>) {
 		this.bucket = config.bucket;
@@ -57,6 +65,7 @@ export class ZodBucket<T extends SchemaMap, P extends ZodType = ZodType> {
 			});
 		this.schema = config.schema;
 		this.partitionSchema = config.partitionSchema;
+		this.enableMutex = config.enableMutex !== false; // Default to true
 
 		// Initialize rehiver with custom options or defaults
 		this.rehiver = new Rehiver({
@@ -69,6 +78,16 @@ export class ZodBucket<T extends SchemaMap, P extends ZodType = ZodType> {
 		// Set up partition parser if partition schema is provided
 		if (this.partitionSchema) {
 			this.partitionParser = this.rehiver.partitionParser(this.partitionSchema);
+		}
+
+		// Initialize mutex if enabled
+		if (this.enableMutex) {
+			this.mutex = new S3Mutex({
+				s3Client: this.s3Client,
+				bucketName: this.bucket,
+				keyPrefix: `${this.prefix ? `${this.prefix}/` : ""}locks/`,
+				...config.mutexOptions,
+			});
 		}
 	}
 
@@ -96,15 +115,30 @@ export class ZodBucket<T extends SchemaMap, P extends ZodType = ZodType> {
 		const validatedValue = schemaForKey.parse(value);
 
 		const s3Key = this.getS3Key(String(key));
+		const lockName = `set-${s3Key}`;
 
-		const command = new PutObjectCommand({
-			Bucket: this.bucket,
-			Key: s3Key,
-			Body: JSON.stringify(validatedValue),
-			ContentType: "application/json",
-		});
+		// Use mutex if enabled, otherwise write directly
+		if (this.enableMutex && this.mutex) {
+			await this.mutex.withLock(lockName, async () => {
+				const command = new PutObjectCommand({
+					Bucket: this.bucket,
+					Key: s3Key,
+					Body: JSON.stringify(validatedValue),
+					ContentType: "application/json",
+				});
 
-		await this.s3Client.send(command);
+				await this.s3Client.send(command);
+			});
+		} else {
+			const command = new PutObjectCommand({
+				Bucket: this.bucket,
+				Key: s3Key,
+				Body: JSON.stringify(validatedValue),
+				ContentType: "application/json",
+			});
+
+			await this.s3Client.send(command);
+		}
 	}
 
 	async get<K extends keyof T>(key: K): Promise<z.infer<T[K]> | null> {
@@ -148,11 +182,45 @@ export class ZodBucket<T extends SchemaMap, P extends ZodType = ZodType> {
 
 	async delete<K extends keyof T>(key: K): Promise<boolean> {
 		const s3Key = this.getS3Key(String(key));
+		const lockName = `delete-${s3Key}`;
 
 		// First check if the object exists
 		const exists = await this.exists(key);
 		if (!exists) {
 			return false;
+		}
+
+		// Use mutex if enabled, otherwise delete directly
+		if (this.enableMutex && this.mutex) {
+			const result = await this.mutex.withLock(lockName, async () => {
+				try {
+					const command = new DeleteObjectCommand({
+						Bucket: this.bucket,
+						Key: s3Key,
+					});
+
+					await this.s3Client.send(command);
+					return true;
+				} catch (error) {
+					if (error instanceof Error && error.name === "NoSuchKey") {
+						return false;
+					}
+					if (
+						typeof error === "object" &&
+						error !== null &&
+						"$metadata" in error
+					) {
+						const awsError = error as {
+							$metadata?: { httpStatusCode?: number };
+						};
+						if (awsError.$metadata?.httpStatusCode === 404) {
+							return false;
+						}
+					}
+					throw error;
+				}
+			});
+			return result ?? false;
 		}
 
 		try {
@@ -258,20 +326,40 @@ export class ZodBucket<T extends SchemaMap, P extends ZodType = ZodType> {
 
 		// Construct the full S3 key
 		const s3Key = this.getS3Key(`${path}/${String(schemaKey)}.json`);
+		const lockName = `setPartitioned-${s3Key}`;
 
-		const command = new PutObjectCommand({
-			Bucket: this.bucket,
-			Key: s3Key,
-			Body: JSON.stringify(validatedValue),
-			ContentType: "application/json",
-			Metadata: {
-				// Store partition info in metadata for easier querying
-				partitions: JSON.stringify(partitions),
-				schemaKey: String(schemaKey),
-			},
-		});
+		// Use mutex if enabled, otherwise write directly
+		if (this.enableMutex && this.mutex) {
+			await this.mutex.withLock(lockName, async () => {
+				const command = new PutObjectCommand({
+					Bucket: this.bucket,
+					Key: s3Key,
+					Body: JSON.stringify(validatedValue),
+					ContentType: "application/json",
+					Metadata: {
+						// Store partition info in metadata for easier querying
+						partitions: JSON.stringify(partitions),
+						schemaKey: String(schemaKey),
+					},
+				});
 
-		await this.s3Client.send(command);
+				await this.s3Client.send(command);
+			});
+		} else {
+			const command = new PutObjectCommand({
+				Bucket: this.bucket,
+				Key: s3Key,
+				Body: JSON.stringify(validatedValue),
+				ContentType: "application/json",
+				Metadata: {
+					// Store partition info in metadata for easier querying
+					partitions: JSON.stringify(partitions),
+					schemaKey: String(schemaKey),
+				},
+			});
+
+			await this.s3Client.send(command);
+		}
 	}
 
 	/**
@@ -410,5 +498,38 @@ export class ZodBucket<T extends SchemaMap, P extends ZodType = ZodType> {
 	 */
 	createTimePartitioner(options: Parameters<Rehiver["timePartitioner"]>[0]) {
 		return this.rehiver.timePartitioner(options);
+	}
+
+	/**
+	 * Get the S3Mutex instance for advanced locking operations
+	 * Only available when mutex is enabled
+	 */
+	getMutex(): S3Mutex | undefined {
+		return this.mutex;
+	}
+
+	/**
+	 * Clean up stale locks in the mutex system
+	 * Only works when mutex is enabled
+	 */
+	async cleanupStaleLocks(options?: {
+		olderThan?: number;
+		dryRun?: boolean;
+	}) {
+		if (!this.mutex) {
+			throw new Error("Mutex not enabled. Cannot clean up locks.");
+		}
+
+		return await this.mutex.cleanupStaleLocks({
+			prefix: `${this.prefix ? `${this.prefix}/` : ""}locks/`,
+			...options,
+		});
+	}
+
+	/**
+	 * Check if mutex locking is enabled
+	 */
+	isMutexEnabled(): boolean {
+		return this.enableMutex && !!this.mutex;
 	}
 }

@@ -451,4 +451,149 @@ describe("ZodBucket", () => {
 			await bucketWithCustomPrefix.delete("user");
 		});
 	});
+
+	describe("Mutex Functionality", () => {
+		let zodBucketWithMutex: ZodBucket<typeof testSchemas>;
+		let zodBucketWithoutMutex: ZodBucket<typeof testSchemas>;
+
+		beforeEach(() => {
+			zodBucketWithMutex = new ZodBucket({
+				bucket: TEST_BUCKET,
+				prefix: "mutex-test",
+				s3Client,
+				schema: testSchemas,
+				enableMutex: true,
+				mutexOptions: {
+					lockTimeoutMs: 30000,
+					maxRetries: 3,
+				},
+			});
+
+			zodBucketWithoutMutex = new ZodBucket({
+				bucket: TEST_BUCKET,
+				prefix: "no-mutex-test",
+				s3Client,
+				schema: testSchemas,
+				enableMutex: false,
+			});
+		});
+
+		it("should enable mutex by default", () => {
+			const defaultBucket = new ZodBucket({
+				bucket: TEST_BUCKET,
+				s3Client,
+				schema: testSchemas,
+			});
+
+			expect(defaultBucket.isMutexEnabled()).toBe(true);
+		});
+
+		it("should allow disabling mutex", () => {
+			expect(zodBucketWithoutMutex.isMutexEnabled()).toBe(false);
+			expect(zodBucketWithoutMutex.getMutex()).toBeUndefined();
+		});
+
+		it("should provide access to mutex instance when enabled", () => {
+			expect(zodBucketWithMutex.isMutexEnabled()).toBe(true);
+			expect(zodBucketWithMutex.getMutex()).toBeDefined();
+		});
+
+		it("should perform safe writes with mutex", async () => {
+			await zodBucketWithMutex.set("user", testUser);
+			const retrieved = await zodBucketWithMutex.get("user");
+			expect(retrieved).toEqual(testUser);
+		});
+
+		it("should perform safe partitioned writes with mutex", async () => {
+			const bucketWithPartitionsAndMutex = new ZodBucket({
+				bucket: TEST_BUCKET,
+				prefix: "mutex-partitioned-test",
+				s3Client,
+				schema: testSchemas,
+				partitionSchema: PartitionSchema,
+				enableMutex: true,
+			});
+
+			const path = "year=2023/month=12/day=15";
+			await bucketWithPartitionsAndMutex.setPartitioned(path, "user", testUser);
+			const retrieved = await bucketWithPartitionsAndMutex.getPartitioned(
+				path,
+				"user",
+			);
+
+			expect(retrieved).not.toBeNull();
+			if (retrieved) {
+				expect(retrieved.value).toEqual(testUser);
+			}
+		});
+
+		it("should perform safe deletes with mutex", async () => {
+			await zodBucketWithMutex.set("user", testUser);
+			expect(await zodBucketWithMutex.exists("user")).toBe(true);
+
+			const deleted = await zodBucketWithMutex.delete("user");
+			expect(deleted).toBe(true);
+			expect(await zodBucketWithMutex.exists("user")).toBe(false);
+		});
+
+		it("should handle concurrent writes safely", async () => {
+			const promises = [];
+			const testUsers = Array.from({ length: 5 }, (_, i) => ({
+				...testUser,
+				id: `user-${i}`,
+				name: `User ${i}`,
+			}));
+
+			// Perform concurrent writes to the same key
+			for (let i = 0; i < 5; i++) {
+				promises.push(zodBucketWithMutex.set("user", testUsers[i]));
+			}
+
+			await Promise.all(promises);
+
+			// Verify that one of the writes succeeded
+			const finalValue = await zodBucketWithMutex.get("user");
+			expect(finalValue).toBeDefined();
+			expect(
+				testUsers.some((u) => JSON.stringify(u) === JSON.stringify(finalValue)),
+			).toBe(true);
+		});
+
+		it("should clean up stale locks", async () => {
+			await zodBucketWithMutex.set("user", testUser);
+
+			// Try to clean up stale locks (should not throw)
+			const result = await zodBucketWithMutex.cleanupStaleLocks({
+				dryRun: true,
+			});
+
+			expect(result).toHaveProperty("total");
+			expect(result).toHaveProperty("stale");
+			expect(result).toHaveProperty("cleaned");
+		});
+
+		it("should throw error when trying to clean locks without mutex", async () => {
+			await expect(zodBucketWithoutMutex.cleanupStaleLocks()).rejects.toThrow(
+				"Mutex not enabled. Cannot clean up locks.",
+			);
+		});
+
+		it("should handle mutex configuration options", () => {
+			const bucketWithCustomMutex = new ZodBucket({
+				bucket: TEST_BUCKET,
+				prefix: "custom-mutex",
+				s3Client,
+				schema: testSchemas,
+				enableMutex: true,
+				mutexOptions: {
+					lockTimeoutMs: 10000,
+					maxRetries: 2,
+					retryDelayMs: 100,
+				},
+			});
+
+			expect(bucketWithCustomMutex.isMutexEnabled()).toBe(true);
+			expect(bucketWithCustomMutex.getMutex()).toBeDefined();
+		});
+	});
 });

@@ -215,3 +215,143 @@ const users2023 = await partitionedBucket.findPartitioned(
 );
 // Returns an array of user objects from 2023.
 ```
+
+## Mutex Support for Safe Writes
+
+ZodBucket now includes built-in support for S3-based distributed locking using [s3-mutex](https://github.com/byndcloud/s3-mutex) to ensure safe concurrent writes. This is particularly useful when multiple services or instances need to write to the same S3 objects.
+
+### Basic Usage with Mutex
+
+```typescript
+import { S3Client } from "@aws-sdk/client-s3";
+import { ZodBucket } from "zod-bucket";
+import { z } from "zod";
+
+const s3Client = new S3Client({ region: "us-east-1" });
+
+const schemas = {
+  user: z.object({
+    id: z.string(),
+    name: z.string(),
+    email: z.string().email(),
+  }),
+  settings: z.object({
+    theme: z.enum(["light", "dark"]),
+    notifications: z.boolean(),
+  }),
+};
+
+// Mutex is enabled by default
+const bucket = new ZodBucket({
+  bucket: "my-data-bucket",
+  s3Client,
+  schema: schemas,
+  // Optional: customize mutex behavior
+  mutexOptions: {
+    lockTimeoutMs: 60000,  // 1 minute timeout
+    maxRetries: 5,         // Maximum retry attempts
+    retryDelayMs: 200,     // Base delay between retries
+  },
+});
+
+// All write operations are now mutex-protected
+await bucket.set("user", { 
+  id: "123", 
+  name: "John Doe", 
+  email: "john@example.com" 
+});
+
+// Safe concurrent writes - only one will succeed at a time
+Promise.all([
+  bucket.set("user", { id: "123", name: "John", email: "john@example.com" }),
+  bucket.set("user", { id: "123", name: "Jane", email: "jane@example.com" }),
+]);
+```
+
+### Disabling Mutex
+
+If you don't need mutex protection, you can disable it:
+
+```typescript
+const bucketWithoutMutex = new ZodBucket({
+  bucket: "my-data-bucket",
+  s3Client,
+  schema: schemas,
+  enableMutex: false, // Disable mutex
+});
+```
+
+### Advanced Mutex Operations
+
+```typescript
+// Check if mutex is enabled
+if (bucket.isMutexEnabled()) {
+  // Get direct access to the mutex instance for advanced operations
+  const mutex = bucket.getMutex();
+  
+  // Manual lock acquisition (for custom operations)
+  if (mutex) {
+    const acquired = await mutex.acquireLock("custom-resource");
+    if (acquired) {
+      try {
+        // Perform custom S3 operations
+        // ...
+      } finally {
+        await mutex.releaseLock("custom-resource");
+      }
+    }
+  }
+}
+
+// Clean up stale locks periodically
+const cleanupResult = await bucket.cleanupStaleLocks({
+  olderThan: Date.now() - 3600000, // Clean locks older than 1 hour
+  dryRun: true, // Just report, don't actually delete
+});
+
+console.log(`Found ${cleanupResult.stale} stale locks out of ${cleanupResult.total}`);
+```
+
+### Partitioned Operations with Mutex
+
+Mutex protection also works with partitioned operations:
+
+```typescript
+const partitionedBucket = new ZodBucket({
+  bucket: "my-data-bucket",
+  s3Client,
+  schema: schemas,
+  partitionSchema: z.object({
+    year: z.string(),
+    month: z.string(),
+    day: z.string(),
+  }),
+  enableMutex: true, // Mutex enabled for partitioned writes too
+});
+
+// Safe partitioned writes
+await partitionedBucket.setPartitioned(
+  "year=2023/month=12/day=15",
+  "user",
+  { id: "123", name: "John Doe", email: "john@example.com" }
+);
+```
+
+### Mutex Configuration Options
+
+The `mutexOptions` parameter accepts the following options:
+
+- `keyPrefix`: Prefix for lock keys (default: auto-generated based on bucket prefix)
+- `maxRetries`: Maximum number of lock acquisition attempts (default: 5)
+- `retryDelayMs`: Base delay between retries in milliseconds (default: 200)
+- `maxRetryDelayMs`: Maximum delay between retries (default: 5000)
+- `useJitter`: Add randomness to retry delays (default: true)
+- `lockTimeoutMs`: Lock expiration time in milliseconds (default: 60000)
+- `clockSkewToleranceMs`: Tolerance for clock differences (default: 1000)
+
+### Performance Considerations
+
+- S3-based locking has higher latency than in-memory solutions
+- Consider using mutex only when necessary for data consistency
+- Monitor lock contention in high-traffic scenarios
+- Clean up stale locks periodically to maintain performance
