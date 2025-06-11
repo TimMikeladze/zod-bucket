@@ -1,7 +1,7 @@
 {
 	"name": "zod-bucket",
 	"description": "Type-safe S3 object storage for TypeScript, powered by Zod.",
-	"version": "0.1.0",
+	"version": "0.2.0",
 	"author": "Tim Mikeladze <tim.mikeladze@gmail.com>",
 	"license": "MIT",
 	"keywords": ["zod", "s3", "storage", "type-safe", "object-storage"],
