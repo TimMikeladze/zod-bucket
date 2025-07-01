@@ -82,8 +82,8 @@ importers:
         specifier: 9.1.2
         version: 9.1.2
       dotenv:
-        specifier: ^16.4.7
-        version: 16.4.7
+        specifier: ^17.0.1
+        version: 17.0.1
       jsdom:
         specifier: 26.0.0
         version: 26.0.0
@@ -2488,8 +2488,8 @@ packages:
     resolution: {integrity: sha512-1gxPBJpI/pcjQhKgIU91II6Wkay+dLcN3M6rf2uwP8hRur3HtQXjVrdAK3sjC0piaEuxzMwjXChcETiJl47lAQ==}
     engines: {node: '>=18'}
 
-  dotenv@16.4.7:
-    resolution: {integrity: sha512-47qPchRCykZC03FhkYAhrvwU4xDBFIj1QPqaarj6mdM/hgUzfPHcpkHJOn3mJAufFeeAxAzeGsr5X0M4k6fLZQ==}
+  dotenv@17.0.1:
+    resolution: {integrity: sha512-GLjkduuAL7IMJg/ZnOPm9AnWKJ82mSE2tzXLaJ/6hD6DhwGfZaXG77oB8qbReyiczNxnbxQKyh0OE5mXq0bAHA==}
     engines: {node: '>=12'}
 
   dunder-proto@1.0.1:
@@ -7466,7 +7466,7 @@ snapshots:
     dependencies:
       type-fest: 4.34.1
 
-  dotenv@16.4.7: {}
+  dotenv@17.0.1: {}
 
   dunder-proto@1.0.1:
     dependencies:
